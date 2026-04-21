@@ -1,0 +1,12 @@
+# /etc/hosts
+
+127.0.0.1   localhost localhost.localdomain
+::1         localhost localhost.localdomain
+
+# Cluster nodes
+192.168.50.1    carrier
+192.168.50.15   interceptor-01
+192.168.50.32   interceptor-02
+192.168.50.11   corsair-01
+192.168.50.19   observer
+192.168.50.50   arbiter

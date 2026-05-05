@@ -90,10 +90,16 @@ sudo xfs_quota -x -c \
     "limit -u bsoft=${QUOTA_BSOFT} bhard=${QUOTA_BHARD} isoft=${QUOTA_ISOFT} ihard=${QUOTA_IHARD} $USER_UID" \
     $HOME_ROOT
 
-# Add to Slurm accounting
-echo ""
-echo "Adding $ID to Slurm accounting"
-sacctmgr -i add user "$ID" Account=root
+# Add to Slurm accounting (skip if Slurm not installed)
+if command -v sacctmgr &>/dev/null; then
+    echo ""
+    echo "Adding $ID to Slurm accounting"
+    sacctmgr -i add user "$ID" Account=root
+else
+    echo ""
+    echo "Slurm not installed. Skipping accounting entry."
+    echo "(Run 'sacctmgr -i add user $ID Account=root' after Slurm is set up)"
+fi
 
 echo ""
 echo "========================================"
@@ -105,8 +111,11 @@ ls -ld "$HOME_ROOT/$ID"
 echo ""
 sudo xfs_quota -x -c "report -h" $HOME_ROOT | grep -E "^User quota|^$ID" || true
 echo ""
-sacctmgr show user "$ID" -n
-echo ""
+if command -v sacctmgr &>/dev/null; then
+    echo "Slurm accounting:"
+    sacctmgr show user "$ID" -n
+    echo ""
+fi
 echo "User $ID created."
 echo "SSH: ssh $ID@carrier.cluster.local"
 echo "Password change required on first login."

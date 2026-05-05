@@ -55,6 +55,12 @@
         name: chrony
         state: present
 
+    - name: Comment out existing pool and server lines
+      replace:
+        path: /etc/chrony.conf
+        regexp: '^(pool|server)\s+'
+        replace: '# \1 '
+
     - name: Configure nodes to sync from head node
       blockinfile:
         path: /etc/chrony.conf

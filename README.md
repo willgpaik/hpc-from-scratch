@@ -11,7 +11,7 @@ Each episode has its own directory with templates and a short troubleshooting gu
 | 1 | Building Real HPC on a Budget | [post](https://theloginnode.com/posts/2026/03/hpc_from_scratch_01/) | — |
 | 2 | RAM, NVMe, and the iGPU Memory Trap | [post](https://theloginnode.com/posts/2026/03/hpc_from_scratch_02/) | — |
 | 3 | The WiFi Login Node | [post](https://theloginnode.com/posts/2026/04/hpc_from_scratch_03/) | [ep03-network-os/](ep03-network-os/) |
-| 3 | The WiFi Login Node | [post](https://theloginnode.com/posts/2026/05/hpc_from_scratch_04/) | [ep04-storage-auth/](ep04-storage-auth/) |
+| 4 | The WiFi Login Node | [post](https://theloginnode.com/posts/2026/05/hpc_from_scratch_04/) | [ep04-storage-auth/](ep04-storage-auth/) |
 
 ## The Cluster
 

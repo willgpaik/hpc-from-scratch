@@ -1,0 +1,10 @@
+# Ansible secrets - never commit these
+vault.yaml
+.ansible_vault_pw
+*.vault
+
+# Ansible logs
+log/
+
+# VIM
+*~

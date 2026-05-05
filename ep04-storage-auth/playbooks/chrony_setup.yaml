@@ -1,0 +1,95 @@
+# chrony_setup.yaml
+# Run from arbiter at /opt/ansible
+# Configures carrier as NTP server and all other nodes as clients
+# Run this before freeipa_setup.yaml - Kerberos requires time sync
+#
+# Usage: ansible-playbook playbooks/chrony_setup.yaml -K
+
+- name: Configure Chrony server on head node
+  hosts: head
+  become: true
+
+  tasks:
+    - name: Install Chrony
+      dnf:
+        name: chrony
+        state: present
+
+    - name: Configure head node as NTP server
+      blockinfile:
+        path: /etc/chrony.conf
+        block: |
+          # Sync from external sources
+          server time.cloudflare.com iburst
+          server time.nist.gov iburst
+          pool pool.ntp.org iburst
+
+          # Allow cluster nodes to sync from this server
+          allow {{ cluster_network }}
+
+          # Serve time even if not synced (stratum 10)
+          local stratum 10
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - NTP CONFIG"
+
+    - name: Enable and start chronyd
+      systemd:
+        name: chronyd
+        enabled: true
+        state: started
+
+    - name: Open NTP port in firewall
+      firewalld:
+        service: ntp
+        permanent: true
+        state: enabled
+        immediate: true
+      ignore_errors: true
+
+- name: Configure Chrony clients on all other nodes
+  hosts: workers,gpu,management,visualization
+  become: true
+
+  tasks:
+    - name: Install Chrony
+      dnf:
+        name: chrony
+        state: present
+
+    - name: Configure nodes to sync from head node
+      blockinfile:
+        path: /etc/chrony.conf
+        block: |
+          # Sync from head node (carrier)
+          server {{ hostvars['carrier.cluster.local']['ansible_host'] }} iburst
+
+          # Fallback local clock if head node unavailable
+          local stratum 10
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - NTP CONFIG"
+
+    - name: Enable and start chronyd
+      systemd:
+        name: chronyd
+        enabled: true
+        state: started
+
+- name: Force time sync and verify
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Make initial time step
+      command: chronyc makestep
+      changed_when: false
+
+    - name: Wait for sync
+      pause:
+        seconds: 30
+
+    - name: Verify time synchronization
+      command: chronyc tracking
+      register: chrony_status
+      changed_when: false
+
+    - name: Display sync status
+      debug:
+        var: chrony_status.stdout_lines

@@ -1,0 +1,211 @@
+# nfs_setup.yaml
+# Run from arbiter at /opt/ansible
+# Phase 1: NFS server on arbiter
+# Phase 2: NFS clients on all other nodes
+# Phase 3: XFS quota on arbiter (triggers reboot)
+#
+# Prerequisites: nvme_setup_management.yaml completed
+#   /nfsdata/home, /work, /shared, /scratch must exist on arbiter
+#
+# Usage: ansible-playbook playbooks/nfs_setup.yaml -K
+#
+# Note: After this playbook completes, manually reboot carrier (head node).
+#   The playbook reboots worker and GPU nodes automatically, but carrier
+#   requires a manual reboot since it is the SSH entry point.
+#   After rebooting carrier, verify all mounts with: df -h
+
+# ============================================
+# Phase 1: NFS server on arbiter
+# ============================================
+- name: Configure NFS server on arbiter
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Install NFS and SELinux packages
+      dnf:
+        name:
+          - nfs-utils
+          - rpcbind
+          - python3-libsemanage
+          - policycoreutils-python-utils
+        state: present
+
+    - name: Configure /etc/exports
+      copy:
+        dest: /etc/exports
+        content: |
+          /nfsdata/home    {{ cluster_network }}(rw,sync,no_root_squash,no_subtree_check)
+          /nfsdata/work    {{ cluster_network }}(rw,sync,no_root_squash,no_subtree_check)
+          /nfsdata/shared  {{ cluster_network }}(rw,sync,no_root_squash,no_subtree_check)
+          /nfsdata/scratch {{ cluster_network }}(rw,sync,no_root_squash,no_subtree_check)
+
+    - name: Enable and start NFS services
+      systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - rpcbind
+        - nfs-server
+
+    - name: Apply NFS exports
+      command: exportfs -ra
+
+    - name: Open firewall for NFS
+      firewalld:
+        service: "{{ item }}"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop:
+        - nfs
+        - rpc-bind
+        - mountd
+      ignore_errors: true
+
+    - name: Set SELinux booleans for NFS
+      seboolean:
+        name: "{{ item }}"
+        state: true
+        persistent: true
+      loop:
+        - nfs_export_all_rw
+        - use_nfs_home_dirs
+
+    - name: Verify NFS exports
+      command: showmount -e localhost
+      register: nfs_exports
+      changed_when: false
+
+    - name: Show exports
+      debug:
+        var: nfs_exports.stdout_lines
+
+# ============================================
+# Phase 2: NFS clients on all other nodes
+# ============================================
+- name: Configure NFS clients
+  hosts: head,workers,gpu,visualization
+  become: true
+
+  tasks:
+    - name: Install NFS client packages
+      dnf:
+        name:
+          - nfs-utils
+          - python3-libsemanage
+          - policycoreutils-python-utils
+        state: present
+
+    - name: Set SELinux boolean for NFS home
+      seboolean:
+        name: use_nfs_home_dirs
+        state: true
+        persistent: true
+
+    - name: Create mount points
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /work
+        - /shared
+        - /scratch
+
+    - name: Comment out local /home in fstab if present
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*\s+/home\s+(?!.*NFS).*)'
+        replace: '# \1  # Replaced by NFS'
+
+    - name: Remove any existing NFS mount entries to avoid duplicates
+      lineinfile:
+        path: /etc/fstab
+        regexp: "^arbiter\\.cluster\\.local:{{ item.src | regex_escape }}\\s"
+        state: absent
+      loop:
+        - { src: /nfsdata/home,    path: /home }
+        - { src: /nfsdata/work,    path: /work }
+        - { src: /nfsdata/shared,  path: /shared }
+        - { src: /nfsdata/scratch, path: /scratch }
+
+    - name: Add NFS mounts to fstab
+      lineinfile:
+        path: /etc/fstab
+        line: "arbiter.cluster.local:{{ item.src }} {{ item.path }} nfs defaults,_netdev 0 0"
+        state: present
+      loop:
+        - { src: /nfsdata/home,    path: /home }
+        - { src: /nfsdata/work,    path: /work }
+        - { src: /nfsdata/shared,  path: /shared }
+        - { src: /nfsdata/scratch, path: /scratch }
+
+    - name: Reboot non-head nodes to apply NFS mounts
+      reboot:
+        reboot_timeout: 600
+        post_reboot_delay: 30
+      when: inventory_hostname not in groups['head']
+
+    - name: Mount NFS shares on head node without reboot
+      command: mount -a
+      when: inventory_hostname in groups['head']
+      changed_when: false
+
+    - name: Verify mounts
+      command: df -h
+      register: mounts
+      changed_when: false
+
+    - name: Show mounts
+      debug:
+        var: mounts.stdout_lines
+
+    - name: Remind to reboot head node
+      debug:
+        msg: "REMINDER: Manually reboot carrier after this playbook completes, then verify with df -h"
+      when: inventory_hostname in groups['head']
+
+# ============================================
+# Phase 3: XFS quota on arbiter (requires reboot)
+# ============================================
+- name: Enable XFS quota on NFS server
+  hosts: management
+  become: true
+
+  vars:
+    quota_mounts:
+      - /nfsdata/home
+      - /nfsdata/work
+
+  tasks:
+    - name: Install xfsprogs
+      dnf:
+        name: xfsprogs
+        state: present
+
+    - name: Enable uquota and gquota in fstab
+      mount:
+        path: "{{ item }}"
+        src: "{{ ansible_mounts | selectattr('mount', 'equalto', item) | map(attribute='device') | first }}"
+        fstype: xfs
+        opts: defaults,uquota,gquota
+        state: present
+      loop: "{{ quota_mounts }}"
+      when: item in ansible_mounts | map(attribute='mount') | list
+
+    - name: Reboot arbiter to apply quotas
+      reboot:
+        msg: "Rebooting to enable XFS quotas"
+        reboot_timeout: 600
+        post_reboot_delay: 30
+
+    - name: Verify quota is active
+      command: xfs_quota -x -c "state" /nfsdata/home
+      register: quota_state
+      changed_when: false
+
+    - name: Show quota state
+      debug:
+        var: quota_state.stdout_lines

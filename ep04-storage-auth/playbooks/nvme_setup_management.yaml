@@ -1,0 +1,160 @@
+# nvme_setup_management.yaml
+# Run from arbiter at /opt/ansible
+# Partitions the NVMe drive on arbiter using LVM and mounts /nfsdata volumes
+#
+# Storage layout (931.5GB NVMe):
+#   /nfsdata/home    167G  - User home directories (exported via NFS)
+#   /nfsdata/work    251G  - Active project work
+#   /nfsdata/shared   84G  - Shared files and software
+#   /nfsdata/scratch 251G  - Temporary job scratch space
+#
+# Usage: ansible-playbook playbooks/nvme_setup_management.yaml
+
+- name: Setup NVMe storage on arbiter
+  hosts: management
+  become: true
+
+  vars:
+    nvme_device: /dev/nvme0n1
+    vg_name: vg_nfs
+    home_size: 167G
+    work_size: 251G
+    shared_size: 84G
+    scratch_size: 251G
+
+  tasks:
+    - name: Install LVM tools
+      dnf:
+        name: lvm2
+        state: present
+
+    - name: Show current disk layout
+      command: lsblk
+      register: disk_layout
+      changed_when: false
+
+    - name: Display disk layout
+      debug:
+        var: disk_layout.stdout_lines
+
+    - name: Verify NVMe device exists
+      stat:
+        path: "{{ nvme_device }}"
+      register: nvme_check
+      failed_when: not nvme_check.stat.exists
+
+    - name: Confirm before erasing
+      pause:
+        prompt: |
+          WARNING: This will ERASE ALL DATA on {{ nvme_device }}
+
+          Partitions to be created:
+            lv_home:    {{ home_size }}
+            lv_work:    {{ work_size }}
+            lv_shared:  {{ shared_size }}
+            lv_scratch: {{ scratch_size }}
+
+          Press Enter to continue or Ctrl+C then A to abort
+
+    - name: Check if VG already exists
+      command: vgs {{ vg_name }}
+      register: vg_check
+      failed_when: false
+      changed_when: false
+
+    - name: Remove existing VG if present
+      command: vgremove -f {{ vg_name }}
+      when: vg_check.rc == 0
+      ignore_errors: true
+
+    - name: Remove existing PV if present
+      command: pvremove -f {{ nvme_device }}
+      ignore_errors: true
+
+    - name: Wipe filesystem signatures
+      command: wipefs -a {{ nvme_device }}
+
+    - name: Create physical volume
+      command: pvcreate {{ nvme_device }}
+
+    - name: Create volume group
+      command: vgcreate {{ vg_name }} {{ nvme_device }}
+
+    - name: Create logical volumes
+      lvol:
+        vg: "{{ vg_name }}"
+        lv: "{{ item.lv }}"
+        size: "{{ item.size }}"
+        state: present
+      loop:
+        - { lv: lv_home,    size: "{{ home_size }}" }
+        - { lv: lv_work,    size: "{{ work_size }}" }
+        - { lv: lv_shared,  size: "{{ shared_size }}" }
+        - { lv: lv_scratch, size: "{{ scratch_size }}" }
+
+    - name: Format logical volumes as XFS
+      filesystem:
+        fstype: xfs
+        dev: "/dev/{{ vg_name }}/{{ item }}"
+      loop:
+        - lv_home
+        - lv_work
+        - lv_shared
+        - lv_scratch
+
+    - name: Create /nfsdata mount points
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /nfsdata
+        - /nfsdata/home
+        - /nfsdata/work
+        - /nfsdata/shared
+        - /nfsdata/scratch
+
+    - name: Mount logical volumes
+      mount:
+        path: "{{ item.path }}"
+        src: "/dev/{{ vg_name }}/{{ item.lv }}"
+        fstype: xfs
+        opts: defaults
+        state: mounted
+      loop:
+        - { path: /nfsdata/home,    lv: lv_home }
+        - { path: /nfsdata/work,    lv: lv_work }
+        - { path: /nfsdata/shared,  lv: lv_shared }
+        - { path: /nfsdata/scratch, lv: lv_scratch }
+
+    - name: Migrate existing /home to NVMe
+      shell: rsync -av /home/ /nfsdata/home/
+      args:
+        creates: /nfsdata/home/.migration_complete
+
+    - name: Mark migration complete
+      file:
+        path: /nfsdata/home/.migration_complete
+        state: touch
+
+    - name: Bind mount /nfsdata/home to /home on arbiter
+      mount:
+        path: /home
+        src: /nfsdata/home
+        fstype: none
+        opts: bind
+        state: mounted
+
+    - name: Show final storage layout
+      shell: |
+        echo "=== LVM Layout ==="
+        pvs && vgs && lvs
+        echo ""
+        echo "=== Mounted Filesystems ==="
+        df -h /nfsdata/* /home
+      register: storage_info
+      changed_when: false
+
+    - name: Display storage layout
+      debug:
+        var: storage_info.stdout_lines

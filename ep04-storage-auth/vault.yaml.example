@@ -1,0 +1,5 @@
+# Copy this file to vault.yaml and fill in your values
+# Then encrypt it: ansible-vault encrypt vault.yaml
+
+vault_ipa_admin_password: "your_freeipa_admin_password_here"
+vault_ipa_dm_password: "your_directory_manager_password_here"

@@ -1,0 +1,264 @@
+# freeipa_setup.yaml
+# Run from arbiter (management node)
+# Installs FreeIPA server on arbiter and enrolls all nodes as clients
+#
+# Prerequisites:
+#   - All nodes reachable via SSH
+#   - arbiter hostname resolves to 192.168.50.50
+#   - nfs_setup.yaml completed (home directories on NFS)
+#
+# Usage: ansible-playbook freeipa_setup.yaml -K
+
+# ============================================
+# Phase 1: Install FreeIPA server on arbiter
+# ============================================
+- name: Install FreeIPA server on arbiter
+  hosts: management
+  become: true
+
+  vars_files:
+    - ../vault.yaml
+
+  tasks:
+    - name: Verify hostname resolves correctly
+      command: hostname -f
+      register: fqdn
+      changed_when: false
+
+    - name: Show FQDN
+      debug:
+        msg: "FQDN: {{ fqdn.stdout }} (should be arbiter.cluster.local)"
+
+    - name: Fail if FQDN is wrong
+      fail:
+        msg: "Expected arbiter.cluster.local, got {{ fqdn.stdout }}"
+      when: fqdn.stdout != "arbiter.cluster.local"
+
+    - name: Install FreeIPA server packages
+      dnf:
+        name:
+          - freeipa-server
+          - freeipa-server-dns
+        state: present
+
+    - name: Run FreeIPA server installer
+      command: >
+        ipa-server-install
+        --domain={{ cluster_domain }}
+        --realm={{ cluster_realm }}
+        --ds-password={{ vault_ipa_dm_password }}
+        --admin-password={{ vault_ipa_admin_password }}
+        --hostname=arbiter.cluster.local
+        --ip-address=192.168.50.50
+        --no-ntp
+        --unattended
+      args:
+        creates: /etc/ipa/default.conf
+      no_log: true
+
+    - name: Open firewall for FreeIPA
+      firewalld:
+        service: "{{ item }}"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop:
+        - freeipa-ldap
+        - freeipa-ldaps
+        - kerberos
+        - dns
+        - http
+        - https
+
+    - name: Verify FreeIPA is running
+      command: ipactl status
+      register: ipa_status
+      changed_when: false
+
+    - name: Show IPA status
+      debug:
+        var: ipa_status.stdout_lines
+
+    - name: Set default shell to bash
+      shell: |
+        echo "{{ vault_ipa_admin_password }}" | kinit admin
+        ipa config-mod --defaultshell=/bin/bash
+      no_log: true
+      changed_when: false
+
+# ============================================
+# Phase 2: Configure carrier DNS to forward to arbiter
+# ============================================
+- name: Configure DNS forwarding on carrier
+  hosts: head
+  become: true
+
+  tasks:
+    - name: Install bind
+      dnf:
+        name:
+          - bind
+          - bind-utils
+        state: present
+
+    - name: Add cluster.local forwarding zone to named.conf
+      blockinfile:
+        path: /etc/named.conf
+        marker: "// {mark} ANSIBLE MANAGED - Forward cluster.local to arbiter"
+        block: |
+          zone "cluster.local" IN {
+              type forward;
+              forward only;
+              forwarders { 192.168.50.50; };
+          };
+        insertbefore: "^include \"/etc/named.rfc1912.zones\";"
+      notify: Restart named
+
+    - name: Open DNS firewall on carrier
+      firewalld:
+        service: dns
+        permanent: true
+        state: enabled
+        immediate: true
+
+    - name: Ensure named is enabled and started
+      systemd:
+        name: named
+        state: started
+        enabled: true
+
+    - name: Wait for named to stabilize
+      pause:
+        seconds: 5
+
+    - name: Test DNS forwarding
+      command: host arbiter.cluster.local
+      register: dns_test
+      changed_when: false
+      failed_when: false
+
+    - name: Show DNS test result
+      debug:
+        msg: "DNS forwarding: {{ 'OK' if dns_test.rc == 0 else 'FAILED - check /var/log/messages' }}"
+
+  handlers:
+    - name: Restart named
+      systemd:
+        name: named
+        state: restarted
+
+# ============================================
+# Phase 3: Enroll all nodes as FreeIPA clients
+# ============================================
+- name: Enroll FreeIPA clients
+  hosts: head,workers,gpu,visualization
+  become: true
+
+  vars_files:
+    - ../vault.yaml
+
+  tasks:
+    - name: Install IPA client packages
+      dnf:
+        name:
+          - ipa-client
+          - oddjob-mkhomedir
+        state: present
+
+    - name: Configure DNS to use carrier (which forwards to arbiter)
+      shell: |
+        CONN=$(nmcli -t -f NAME connection show --active | head -n1)
+        nmcli connection modify "$CONN" ipv4.dns "192.168.50.1"
+        nmcli connection modify "$CONN" ipv4.dns-search "{{ cluster_domain }}"
+        nmcli connection up "$CONN"
+      changed_when: true
+
+    - name: Wait for DNS
+      pause:
+        seconds: 5
+
+    - name: Check if already enrolled
+      stat:
+        path: /etc/ipa/default.conf
+      register: ipa_check
+
+    - name: Unenroll if already configured
+      command: ipa-client-install --uninstall --unattended
+      when: ipa_check.stat.exists
+      ignore_errors: true
+
+    - name: Enroll node to FreeIPA
+      command: >
+        ipa-client-install
+        --unattended
+        --server=arbiter.cluster.local
+        --domain={{ cluster_domain }}
+        --realm={{ cluster_realm }}
+        --principal=admin
+        --password={{ vault_ipa_admin_password }}
+        --mkhomedir
+        --force-join
+        --no-ntp
+      no_log: true
+      register: enroll_result
+
+    - name: Show enrollment result
+      debug:
+        var: enroll_result.stdout_lines
+
+    - name: Enable and start oddjobd
+      systemd:
+        name: oddjobd
+        state: started
+        enabled: true
+
+    - name: Enable mkhomedir
+      shell: |
+        authselect enable-feature with-mkhomedir
+        authselect apply-changes
+      failed_when: false
+
+    - name: Start and enable SSSD
+      systemd:
+        name: sssd
+        state: started
+        enabled: true
+
+    - name: Verify enrollment
+      command: id admin
+      register: id_test
+      changed_when: false
+
+    - name: Show verification result
+      debug:
+        var: id_test.stdout
+
+# ============================================
+# Phase 4: Summary
+# ============================================
+- name: Print final architecture summary
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Summary
+      debug:
+        msg:
+          - "================================================"
+          - "FreeIPA Setup Complete"
+          - "================================================"
+          - ""
+          - "arbiter (management node):"
+          - "  FreeIPA server, DNS, NFS, Slurm controller"
+          - ""
+          - "carrier (login node):"
+          - "  DNS forwarding cluster.local -> arbiter"
+          - "  DHCP, NAT, SSH gateway"
+          - ""
+          - "To add a new user (run on arbiter):"
+          - "  kinit admin"
+          - "  bash scripts/user_creation.sh"
+          - ""
+          - "FreeIPA Web UI (from outside network):"
+          - "  ssh -L 8443:arbiter.cluster.local:443 wpaik@carrier.cluster.local"
+          - "  Browser: https://localhost:8443/ipa/ui/"

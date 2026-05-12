@@ -1,0 +1,164 @@
+# 02_slurm_build.yaml
+# Run from arbiter at /opt/ansible
+# WARNING: Run once during initial setup only.
+#          Builds Slurm RPMs from source on arbiter and creates the slurm
+#          user with a fixed UID on all nodes.
+#
+# After running this playbook, add to /etc/dnf/dnf.conf on all nodes:
+#   exclude=slurm*
+# This prevents dnf upgrade from overwriting the pinned version.
+#
+# Usage: ansible-playbook playbooks/02_slurm_build.yaml -K
+
+- name: Create slurm user with fixed UID on all nodes
+  hosts: all_nodes
+  become: true
+
+  vars:
+    slurm_uid: 1111
+    slurm_gid: 1111
+
+  tasks:
+    - name: Create slurm group
+      group:
+        name: slurm
+        gid: "{{ slurm_gid }}"
+        state: present
+
+    - name: Create slurm user
+      user:
+        name: slurm
+        uid: "{{ slurm_uid }}"
+        group: slurm
+        shell: /bin/bash
+        home: /var/lib/slurm
+        create_home: true
+        state: present
+
+    - name: Verify slurm user UID
+      shell: id slurm
+      register: slurm_verify
+      changed_when: false
+
+    - name: Show slurm user (all nodes must match)
+      debug:
+        msg: "{{ inventory_hostname }}: {{ slurm_verify.stdout }}"
+
+- name: Build Slurm RPMs from source on arbiter
+  hosts: management
+  become: true
+
+  vars:
+    slurm_version: "25.11.1"
+    slurm_url: "https://download.schedmd.com/slurm/slurm-{{ slurm_version }}.tar.bz2"
+
+  tasks:
+    - name: Enable CRB repository
+      command: dnf config-manager --set-enabled crb
+      changed_when: false
+
+    - name: Install build dependencies
+      dnf:
+        name:
+          - rpm-build
+          - gcc
+          - make
+          - python3
+          - python3-devel
+          - openssl-devel
+          - pam-devel
+          - perl
+          - perl-ExtUtils-MakeMaker
+          - readline-devel
+          - ncurses-devel
+          - mariadb-devel
+          - munge-devel
+          - hwloc-devel
+          - lua-devel
+          - dbus-devel
+          - systemd-devel
+          - libbpf-devel
+          - pmix-devel
+          - libevent-devel
+        state: present
+        enablerepo: crb
+
+    - name: Create build directory
+      file:
+        path: /tmp/slurm_build
+        state: directory
+
+    - name: Download Slurm source
+      get_url:
+        url: "{{ slurm_url }}"
+        dest: "/tmp/slurm_build/slurm-{{ slurm_version }}.tar.bz2"
+        timeout: 300
+      retries: 3
+      delay: 10
+
+    - name: Build Slurm RPMs with cgroup v2 and PMIx support
+      shell: |
+        cd /tmp/slurm_build/
+        rpmbuild -ta slurm-{{ slurm_version }}.tar.bz2 \
+          --define "_slurm_sysconfdir /etc/slurm" \
+          --with cgroupv2 \
+          --with pmix \
+          --define "_with_pmix --with-pmix"
+      register: rpm_build
+
+    - name: Show build result
+      debug:
+        msg: "RPM build {{ 'completed' if rpm_build.rc == 0 else 'FAILED' }}"
+
+    - name: Copy RPMs to staging directory
+      shell: |
+        mkdir -p /tmp/slurm_rpms
+        cp /root/rpmbuild/RPMS/x86_64/slurm-*.rpm /tmp/slurm_rpms/
+
+    - name: Find built RPMs
+      find:
+        paths: /tmp/slurm_rpms
+        patterns: "slurm-*.rpm"
+      register: rpm_files
+
+    - name: Show built RPMs
+      debug:
+        msg: "Built {{ rpm_files.matched }} RPM files"
+
+    - name: Fetch RPMs to Ansible controller
+      fetch:
+        src: "{{ item.path }}"
+        dest: /tmp/slurm_rpms_local/
+        flat: true
+      loop: "{{ rpm_files.files }}"
+
+- name: Pin Slurm version in dnf on all nodes
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Exclude slurm from dnf upgrades
+      lineinfile:
+        path: /etc/dnf/dnf.conf
+        line: "exclude=slurm*"
+        state: present
+
+    - name: Verify exclusion
+      shell: grep slurm /etc/dnf/dnf.conf
+      register: dnf_check
+      changed_when: false
+
+    - name: Show dnf exclusion
+      debug:
+        var: dnf_check.stdout
+
+- name: Summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Done
+      debug:
+        msg:
+          - "Slurm RPMs built and fetched to /tmp/slurm_rpms_local/"
+          - "Slurm version pinned in dnf on all nodes."
+          - "Next: ansible-playbook playbooks/03_slurm_install.yaml"

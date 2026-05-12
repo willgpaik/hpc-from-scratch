@@ -1,0 +1,113 @@
+# fix/07_slurm_hard_reset.yaml
+# Hard reset: stops all Slurm services, wipes controller state,
+# redistributes config, and restarts everything in order.
+# WARNING: All running jobs will be lost.
+#
+# Usage: ansible-playbook playbooks/fix/07_slurm_hard_reset.yaml -K
+
+- name: Stop all Slurm services
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Stop controller services
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - slurmctld
+        - slurmdbd
+      failed_when: false
+
+- name: Stop slurmd on compute nodes
+  hosts: workers,gpu
+  become: true
+
+  tasks:
+    - name: Stop slurmd
+      systemd:
+        name: slurmd
+        state: stopped
+      failed_when: false
+
+- name: Wipe controller state
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Wipe slurmctld state files
+      shell: rm -rf /var/spool/slurmctld/*
+
+- name: Redistribute config files
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Copy slurm.conf
+      copy:
+        src: ../../configs/slurm.conf
+        dest: /etc/slurm/slurm.conf
+        owner: slurm
+        group: slurm
+        mode: '0644'
+
+    - name: Copy cgroup.conf
+      copy:
+        src: ../../configs/cgroup.conf
+        dest: /etc/slurm/cgroup.conf
+        owner: slurm
+        group: slurm
+        mode: '0644'
+
+- name: Start services on arbiter
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Start slurmdbd
+      systemd:
+        name: slurmdbd
+        state: started
+
+    - name: Wait for slurmdbd
+      wait_for:
+        port: 6819
+        delay: 2
+
+    - name: Start slurmctld
+      systemd:
+        name: slurmctld
+        state: started
+
+    - name: Wait for slurmctld
+      wait_for:
+        port: 6817
+        delay: 2
+
+- name: Start slurmd on compute nodes
+  hosts: workers,gpu
+  become: true
+
+  tasks:
+    - name: Start slurmd
+      systemd:
+        name: slurmd
+        state: started
+
+- name: Resume nodes and verify
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Resume all nodes
+      command: scontrol update NodeName=ALL State=RESUME
+      ignore_errors: true
+
+    - name: Check sinfo
+      command: sinfo
+      register: sinfo_out
+      changed_when: false
+
+    - name: Show status
+      debug:
+        var: sinfo_out.stdout_lines

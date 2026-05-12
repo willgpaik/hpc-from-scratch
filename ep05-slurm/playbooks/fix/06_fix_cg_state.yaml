@@ -1,0 +1,39 @@
+# fix/06_fix_cg_state.yaml
+# Use when compute nodes get stuck in CG (completing) state
+# Updates systemd override for slurmd and restarts the service
+#
+# Usage: ansible-playbook playbooks/fix/06_fix_cg_state.yaml -K
+
+- name: Fix CG state on compute nodes
+  hosts: workers,gpu
+  become: true
+
+  tasks:
+    - name: Update slurmd systemd override
+      copy:
+        dest: /etc/systemd/system/slurmd.service.d/override.conf
+        content: |
+          [Service]
+          Delegate=yes
+          KillMode=process
+          LimitMEMLOCK=infinity
+          LimitSTACK=infinity
+        mode: '0644'
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: true
+
+    - name: Restart slurmd
+      systemd:
+        name: slurmd
+        state: restarted
+
+    - name: Check slurmd status
+      command: systemctl status slurmd
+      register: slurmd_status
+      ignore_errors: true
+
+    - name: Show status
+      debug:
+        msg: "{{ slurmd_status.stdout_lines }}"

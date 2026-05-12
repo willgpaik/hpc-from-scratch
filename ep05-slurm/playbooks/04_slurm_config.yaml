@@ -1,0 +1,254 @@
+# 04_slurm_config.yaml
+# Run from arbiter at /opt/ansible
+# Configures slurm.conf, slurmdbd.conf, cgroup.conf, sets up MariaDB,
+# applies systemd overrides, and starts all Slurm services.
+#
+# Prerequisites: 03_slurm_install.yaml completed
+#
+# Usage: ansible-playbook playbooks/04_slurm_config.yaml -K
+#
+# Note: Edit configs/slurm.conf and configs/slurmdbd.conf before running.
+#       Set RealMemory values using 'free -m' output from each node.
+
+- name: Fix hostnames on all nodes
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Set hostname to match inventory
+      hostname:
+        name: "{{ inventory_hostname.split('.')[0] }}"
+        use: systemd
+
+- name: Apply systemd overrides for slurm services
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Create override dirs for controller services
+      file:
+        path: "/etc/systemd/system/{{ item }}.service.d"
+        state: directory
+      loop:
+        - slurmctld
+        - slurmdbd
+      when: inventory_hostname in groups['management']
+
+    - name: Apply User=slurm override for controller
+      copy:
+        dest: "/etc/systemd/system/{{ item }}.service.d/override.conf"
+        content: |
+          [Service]
+          User=slurm
+          Group=slurm
+        mode: '0644'
+      loop:
+        - slurmctld
+        - slurmdbd
+      when: inventory_hostname in groups['management']
+
+    - name: Create override dir for slurmd
+      file:
+        path: /etc/systemd/system/slurmd.service.d
+        state: directory
+      when: >
+        inventory_hostname in groups['workers'] or
+        inventory_hostname in groups['gpu']
+
+    - name: Apply cgroup v2 overrides for slurmd
+      copy:
+        dest: /etc/systemd/system/slurmd.service.d/override.conf
+        content: |
+          [Service]
+          Delegate=yes
+          KillMode=process
+          LimitMEMLOCK=infinity
+          LimitSTACK=infinity
+        mode: '0644'
+      when: >
+        inventory_hostname in groups['workers'] or
+        inventory_hostname in groups['gpu']
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: true
+
+- name: Distribute Slurm configuration files
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Copy slurm.conf
+      copy:
+        src: ../configs/slurm.conf
+        dest: /etc/slurm/slurm.conf
+        owner: slurm
+        group: slurm
+        mode: '0644'
+
+    - name: Copy cgroup.conf
+      copy:
+        src: ../configs/cgroup.conf
+        dest: /etc/slurm/cgroup.conf
+        owner: slurm
+        group: slurm
+        mode: '0644'
+
+- name: Configure slurmdbd on arbiter
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Copy slurmdbd.conf
+      copy:
+        src: ../configs/slurmdbd.conf
+        dest: /etc/slurm/slurmdbd.conf
+        owner: slurm
+        group: slurm
+        mode: '0600'
+
+- name: Configure GRES on GPU node
+  hosts: gpu
+  become: true
+
+  tasks:
+    - name: Create gres.conf
+      copy:
+        dest: /etc/slurm/gres.conf
+        owner: slurm
+        group: slurm
+        mode: '0644'
+        content: |
+          NodeName=corsair-01 Name=gpu Type=nvidia_geforce_gtx_1660_super File=/dev/nvidia0
+
+- name: Configure MariaDB on arbiter
+  hosts: management
+  become: true
+  collections:
+    - community.mysql
+
+  tasks:
+    - name: Start MariaDB
+      systemd:
+        name: mariadb
+        state: started
+        enabled: true
+
+    - name: Wait for MariaDB
+      pause:
+        seconds: 5
+
+    - name: Create slurm database
+      community.mysql.mysql_db:
+        name: slurm_acct_db
+        state: present
+        login_unix_socket: /var/lib/mysql/mysql.sock
+
+    - name: Create slurm DB user
+      community.mysql.mysql_user:
+        name: slurm
+        password: "{{ slurm_db_password }}"
+        priv: "slurm_acct_db.*:ALL"
+        state: present
+        login_unix_socket: /var/lib/mysql/mysql.sock
+
+- name: Reboot compute nodes to apply cgroup/systemd changes
+  hosts: workers,gpu
+  become: true
+
+  tasks:
+    - name: Reboot
+      reboot:
+        reboot_timeout: 600
+        post_reboot_delay: 30
+
+- name: Start Slurm services on arbiter
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Stop services if running
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - slurmctld
+        - slurmdbd
+      failed_when: false
+
+    - name: Clear stale state files
+      shell: rm -rf /var/spool/slurmctld/*
+
+    - name: Start slurmdbd
+      systemd:
+        name: slurmdbd
+        state: started
+        enabled: true
+
+    - name: Wait for slurmdbd
+      wait_for:
+        port: 6819
+        delay: 2
+        timeout: 30
+
+    - name: Initialize accounting database
+      shell: |
+        sacctmgr -i add cluster cluster
+        sacctmgr -i add account root Description="Root" Organization="Cluster"
+      register: db_init
+      failed_when: false
+
+    - name: Start slurmctld
+      systemd:
+        name: slurmctld
+        state: started
+        enabled: true
+
+    - name: Wait for slurmctld
+      wait_for:
+        port: 6817
+        delay: 2
+        timeout: 30
+
+- name: Start slurmd on compute nodes
+  hosts: workers,gpu
+  become: true
+
+  tasks:
+    - name: Start slurmd
+      systemd:
+        name: slurmd
+        state: started
+        enabled: true
+
+- name: Resume all nodes and verify
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Resume all nodes
+      command: scontrol update NodeName=ALL State=RESUME
+      ignore_errors: true
+
+    - name: Check cluster status
+      command: sinfo
+      register: sinfo_out
+      changed_when: false
+
+    - name: Show cluster status
+      debug:
+        var: sinfo_out.stdout_lines
+
+- name: Summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Done
+      debug:
+        msg:
+          - "Slurm cluster configured and running."
+          - ""
+          - "Verify from carrier:"
+          - "  sinfo"
+          - "  srun hostname"
+          - "  sbatch job.sh"

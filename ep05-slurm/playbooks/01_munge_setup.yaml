@@ -1,0 +1,168 @@
+# 01_munge_setup.yaml
+# Run from arbiter at /opt/ansible
+# Installs Munge on all nodes, generates a shared key on arbiter,
+# and distributes it to every node.
+#
+# Prerequisites:
+#   - Slurm user created with fixed UID on all nodes (see 02_slurm_build.yaml)
+#
+# Usage: ansible-playbook playbooks/01_munge_setup.yaml -K
+
+# ============================================
+# Step 1: Install Munge on all nodes
+# ============================================
+- name: Install Munge
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Install Munge packages
+      dnf:
+        name:
+          - munge
+          - munge-libs
+        state: present
+
+    - name: Install rng-tools on management node
+      dnf:
+        name: rng-tools
+        state: present
+      when: inventory_hostname in groups['management']
+
+    - name: Verify munge user
+      shell: id munge
+      register: munge_check
+      changed_when: false
+
+    - name: Show munge user
+      debug:
+        var: munge_check.stdout
+
+# ============================================
+# Step 2: Generate Munge key on arbiter
+# ============================================
+- name: Generate Munge key on arbiter
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Ensure /etc/munge exists
+      file:
+        path: /etc/munge
+        state: directory
+        owner: munge
+        group: munge
+        mode: '0700'
+
+    - name: Generate key
+      shell: dd if=/dev/urandom bs=1 count=1024 > /etc/munge/munge.key
+      args:
+        creates: /etc/munge/munge.key
+
+    - name: Set key permissions
+      file:
+        path: /etc/munge/munge.key
+        owner: munge
+        group: munge
+        mode: '0400'
+
+    - name: Read key for distribution
+      slurp:
+        src: /etc/munge/munge.key
+      register: munge_key_content
+
+    - name: Store key as fact
+      set_fact:
+        munge_key_data: "{{ munge_key_content.content }}"
+      delegate_to: localhost
+      delegate_facts: true
+
+# ============================================
+# Step 3: Distribute key to all nodes
+# ============================================
+- name: Distribute Munge key
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Ensure /etc/munge exists
+      file:
+        path: /etc/munge
+        state: directory
+        owner: munge
+        group: munge
+        mode: '0700'
+
+    - name: Write munge key
+      copy:
+        content: "{{ hostvars['localhost']['munge_key_data'] | b64decode }}"
+        dest: /etc/munge/munge.key
+        owner: munge
+        group: munge
+        mode: '0400'
+
+    - name: Ensure munge directories exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: munge
+        group: munge
+        mode: '0700'
+      loop:
+        - /var/log/munge
+        - /var/lib/munge
+        - /run/munge
+
+    - name: Verify key checksum
+      stat:
+        path: /etc/munge/munge.key
+        checksum_algorithm: sha256
+      register: key_verify
+
+    - name: Show checksum (all should match)
+      debug:
+        msg: "{{ inventory_hostname }}: {{ key_verify.stat.checksum[:16] }}..."
+
+# ============================================
+# Step 4: Start Munge
+# ============================================
+- name: Start Munge
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Enable and restart munge
+      systemd:
+        name: munge
+        enabled: true
+        state: restarted
+
+    - name: Wait for startup
+      pause:
+        seconds: 5
+
+    - name: Test Munge locally
+      shell: munge -n | unmunge
+      register: munge_test
+      changed_when: false
+      become_user: munge
+
+    - name: Show result
+      debug:
+        msg: "{{ inventory_hostname }}: {{ 'OK' if munge_test.rc == 0 else 'FAILED' }}"
+
+    - name: Fail if Munge not working
+      fail:
+        msg: "Munge test failed on {{ inventory_hostname }}"
+      when: munge_test.rc != 0
+
+- name: Summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Done
+      debug:
+        msg:
+          - "Munge setup complete."
+          - "Verify cross-node: munge -n | ssh interceptor-01.cluster.local unmunge"
+          - "Next: ansible-playbook playbooks/02_slurm_build.yaml"

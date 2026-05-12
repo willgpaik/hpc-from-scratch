@@ -1,0 +1,75 @@
+# fix/04_fix_slurmdb.yaml
+# Use when slurmctld starts but cannot connect to slurmdbd
+# Recreates slurmdbd.conf, verifies MariaDB, and restarts services
+#
+# Usage: ansible-playbook playbooks/fix/04_fix_slurmdb.yaml -K
+
+- name: Fix Slurm Database Daemon
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Ensure /etc/slurm directory exists
+      file:
+        path: /etc/slurm
+        state: directory
+        owner: slurm
+        group: slurm
+        mode: '0755'
+
+    - name: Restore slurmdbd.conf
+      copy:
+        src: ../../configs/slurmdbd.conf
+        dest: /etc/slurm/slurmdbd.conf
+        owner: slurm
+        group: slurm
+        mode: '0600'
+
+    - name: Ensure MariaDB is running
+      systemd:
+        name: mariadb
+        state: started
+        enabled: true
+
+    - name: Fix log directory permissions
+      file:
+        path: /var/log/slurm
+        state: directory
+        owner: slurm
+        group: slurm
+        mode: '0755'
+        recurse: true
+
+    - name: Restart slurmdbd
+      systemd:
+        name: slurmdbd
+        state: restarted
+        enabled: true
+        daemon_reload: true
+
+    - name: Wait for slurmdbd port
+      wait_for:
+        port: 6819
+        delay: 2
+        timeout: 30
+      register: dbd_wait
+      ignore_errors: true
+
+    - name: Show slurmdbd log if failed
+      shell: tail -n 30 /var/log/slurm/slurmdbd.log
+      when: dbd_wait.failed is defined and dbd_wait.failed
+
+    - name: Restart slurmctld
+      systemd:
+        name: slurmctld
+        state: restarted
+      when: not (dbd_wait.failed | default(false))
+
+    - name: Check cluster status
+      command: sinfo
+      register: sinfo_out
+      ignore_errors: true
+
+    - name: Show status
+      debug:
+        var: sinfo_out.stdout_lines

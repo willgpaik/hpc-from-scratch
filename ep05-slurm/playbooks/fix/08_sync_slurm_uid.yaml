@@ -1,0 +1,84 @@
+# fix/08_sync_slurm_uid.yaml
+# Use when Slurm UID/GID differs between nodes causing Munge auth failures
+# Syncs UID/GID from arbiter to all compute nodes.
+#
+# Note: If the target UID is occupied by another system user on a node,
+#       reassign that user to a different UID first before running this.
+#       See README for details.
+#
+# Usage: ansible-playbook playbooks/fix/08_sync_slurm_uid.yaml -K
+
+- name: Get Slurm UID/GID from arbiter
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Get slurm UID
+      shell: id -u slurm
+      register: slurm_uid_mgmt
+      changed_when: false
+
+    - name: Get slurm GID
+      shell: id -g slurm
+      register: slurm_gid_mgmt
+      changed_when: false
+
+    - name: Show arbiter IDs
+      debug:
+        msg: "arbiter slurm UID={{ slurm_uid_mgmt.stdout }} GID={{ slurm_gid_mgmt.stdout }}"
+
+- name: Sync UID/GID to compute nodes
+  hosts: workers,gpu
+  become: true
+
+  vars:
+    target_uid: "{{ hostvars['arbiter.cluster.local']['slurm_uid_mgmt'].stdout }}"
+    target_gid: "{{ hostvars['arbiter.cluster.local']['slurm_gid_mgmt'].stdout }}"
+
+  tasks:
+    - name: Stop slurmd
+      systemd:
+        name: slurmd
+        state: stopped
+
+    - name: Sync slurm group GID
+      group:
+        name: slurm
+        gid: "{{ target_gid }}"
+        non_unique: true
+
+    - name: Sync slurm user UID
+      user:
+        name: slurm
+        uid: "{{ target_uid }}"
+        group: slurm
+        non_unique: true
+
+    - name: Fix file ownership after UID change
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: slurm
+        group: slurm
+        recurse: true
+      loop:
+        - /var/lib/slurm
+        - /var/log/slurm
+        - /var/spool/slurmd
+        - /etc/slurm
+        - /run/slurm
+
+    - name: Restart slurmd
+      systemd:
+        name: slurmd
+        state: restarted
+        daemon_reload: true
+
+    - name: Verify UID
+      shell: id slurm
+      register: slurm_verify
+      changed_when: false
+
+    - name: Show result
+      debug:
+        msg: "{{ inventory_hostname }}: {{ slurm_verify.stdout }}"

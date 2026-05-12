@@ -1,0 +1,210 @@
+# 03_slurm_install.yaml
+# Run from arbiter at /opt/ansible
+# Distributes Slurm RPMs built by 02_slurm_build.yaml and installs them
+# on each node according to its role.
+#
+# Prerequisites: 02_slurm_build.yaml completed
+#
+# Usage: ansible-playbook playbooks/03_slurm_install.yaml -K
+
+- name: Install PMIx runtime on all nodes
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Install pmix and libevent
+      dnf:
+        name:
+          - pmix
+          - libevent
+        state: present
+
+- name: Install base Slurm on all nodes
+  hosts: all_nodes
+  become: true
+
+  vars:
+    slurm_version: "25.11.1"
+
+  tasks:
+    - name: Create RPM staging directory
+      file:
+        path: /tmp/slurm_rpms
+        state: directory
+
+    - name: Copy base Slurm RPM
+      copy:
+        src: "/tmp/slurm_rpms_local/slurm-{{ slurm_version }}-1.el10.x86_64.rpm"
+        dest: /tmp/slurm_rpms/
+
+    - name: Copy slurmd RPM
+      copy:
+        src: "/tmp/slurm_rpms_local/slurm-slurmd-{{ slurm_version }}-1.el10.x86_64.rpm"
+        dest: /tmp/slurm_rpms/
+
+    - name: Install base Slurm packages
+      dnf:
+        name:
+          - "/tmp/slurm_rpms/slurm-{{ slurm_version }}-1.el10.x86_64.rpm"
+          - "/tmp/slurm_rpms/slurm-slurmd-{{ slurm_version }}-1.el10.x86_64.rpm"
+        state: present
+        disable_gpg_check: true
+
+- name: Install controller packages on arbiter
+  hosts: management
+  become: true
+
+  vars:
+    slurm_version: "25.11.1"
+
+  tasks:
+    - name: Copy controller RPMs
+      copy:
+        src: "/tmp/slurm_rpms_local/{{ item }}"
+        dest: /tmp/slurm_rpms/
+      loop:
+        - "slurm-slurmctld-{{ slurm_version }}-1.el10.x86_64.rpm"
+        - "slurm-slurmdbd-{{ slurm_version }}-1.el10.x86_64.rpm"
+
+    - name: Install controller packages
+      dnf:
+        name:
+          - "/tmp/slurm_rpms/slurm-slurmctld-{{ slurm_version }}-1.el10.x86_64.rpm"
+          - "/tmp/slurm_rpms/slurm-slurmdbd-{{ slurm_version }}-1.el10.x86_64.rpm"
+          - mariadb-server
+          - mariadb
+          - python3-PyMySQL
+        state: present
+        disable_gpg_check: true
+
+- name: Install libpmi on compute nodes
+  hosts: workers,gpu
+  become: true
+
+  vars:
+    slurm_version: "25.11.1"
+
+  tasks:
+    - name: Copy libpmi RPM
+      copy:
+        src: "/tmp/slurm_rpms_local/slurm-libpmi-{{ slurm_version }}-1.el10.x86_64.rpm"
+        dest: /tmp/slurm_rpms/
+
+    - name: Install libpmi
+      dnf:
+        name: "/tmp/slurm_rpms/slurm-libpmi-{{ slurm_version }}-1.el10.x86_64.rpm"
+        state: present
+        disable_gpg_check: true
+
+- name: Install slurm-contribs on login node (includes seff)
+  hosts: head
+  become: true
+
+  vars:
+    slurm_version: "25.11.1"
+
+  tasks:
+    - name: Copy contribs RPMs
+      copy:
+        src: "/tmp/slurm_rpms_local/{{ item }}"
+        dest: /tmp/slurm_rpms/
+      loop:
+        - "slurm-perlapi-{{ slurm_version }}-1.el10.x86_64.rpm"
+        - "slurm-contribs-{{ slurm_version }}-1.el10.x86_64.rpm"
+
+    - name: Install perlapi (contribs dependency)
+      dnf:
+        name: "/tmp/slurm_rpms/slurm-perlapi-{{ slurm_version }}-1.el10.x86_64.rpm"
+        state: present
+        disable_gpg_check: true
+
+    - name: Install contribs (includes seff)
+      dnf:
+        name: "/tmp/slurm_rpms/slurm-contribs-{{ slurm_version }}-1.el10.x86_64.rpm"
+        state: present
+        disable_gpg_check: true
+
+    - name: Verify seff installed
+      command: which seff
+      register: seff_check
+      changed_when: false
+
+    - name: Show seff path
+      debug:
+        msg: "seff installed at: {{ seff_check.stdout }}"
+
+- name: Create Slurm directories on all nodes
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Create standard directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: slurm
+        group: slurm
+        mode: '0755'
+      loop:
+        - /var/spool/slurm
+        - /var/log/slurm
+        - /etc/slurm
+        - /run/slurm
+
+    - name: Create controller directories on arbiter
+      file:
+        path: /var/spool/slurmctld
+        state: directory
+        owner: slurm
+        group: slurm
+        mode: '0755'
+      when: inventory_hostname in groups['management']
+
+    - name: Create compute directories
+      file:
+        path: /var/spool/slurmd
+        state: directory
+        owner: slurm
+        group: slurm
+        mode: '0755'
+      when: >
+        inventory_hostname in groups['workers'] or
+        inventory_hostname in groups['gpu']
+
+    - name: Ensure /run/slurm persists across reboots
+      copy:
+        dest: /etc/tmpfiles.d/slurm.conf
+        content: "d /run/slurm 0755 slurm slurm -\n"
+        mode: '0644'
+
+- name: Set PMIx security mode
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Set PMIX_MCA_psec=native
+      copy:
+        dest: /etc/profile.d/pmix.sh
+        content: "export PMIX_MCA_psec=native\n"
+        mode: '0644'
+
+- name: Disable swap on compute nodes
+  hosts: workers,gpu
+  become: true
+
+  tasks:
+    - name: Disable swap target
+      systemd:
+        name: swap.target
+        state: stopped
+        enabled: false
+
+- name: Summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Done
+      debug:
+        msg:
+          - "Slurm packages installed on all nodes."
+          - "Next: ansible-playbook playbooks/04_slurm_config.yaml -K"

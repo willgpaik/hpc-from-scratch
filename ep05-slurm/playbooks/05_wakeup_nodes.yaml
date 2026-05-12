@@ -1,0 +1,60 @@
+# fix/05_wakeup_nodes.yaml
+# Use when nodes are stuck in down/drain state after startup
+# Syncs config files, restarts slurmd on compute nodes, and resumes all nodes
+#
+# Usage: ansible-playbook playbooks/fix/05_wakeup_nodes.yaml -K
+
+- name: Sync slurm.conf to all nodes
+  hosts: all_nodes
+  become: true
+
+  tasks:
+    - name: Ensure slurm.conf is identical on all nodes
+      copy:
+        src: ../../configs/slurm.conf
+        dest: /etc/slurm/slurm.conf
+        owner: slurm
+        group: slurm
+        mode: '0644'
+
+    - name: Sync cgroup.conf
+      copy:
+        dest: /etc/slurm/cgroup.conf
+        owner: slurm
+        group: slurm
+        mode: '0644'
+        content: |
+          ConstrainCores=no
+          ConstrainRAMSpace=no
+          ConstrainSwapSpace=no
+          ConstrainDevices=no
+
+- name: Restart slurmd on compute nodes
+  hosts: workers,gpu
+  become: true
+
+  tasks:
+    - name: Restart slurmd
+      systemd:
+        name: slurmd
+        state: restarted
+        enabled: true
+        daemon_reload: true
+
+- name: Resume all nodes
+  hosts: management
+  become: true
+
+  tasks:
+    - name: Resume all nodes
+      command: scontrol update NodeName=ALL State=RESUME
+      changed_when: true
+
+    - name: Check cluster status
+      command: sinfo
+      register: sinfo_out
+      changed_when: false
+
+    - name: Show status
+      debug:
+        var: sinfo_out.stdout_lines

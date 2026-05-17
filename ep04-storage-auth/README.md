@@ -59,7 +59,19 @@ cd /opt/ansible
 ansible all -m ping
 ```
 
-**5. Run playbooks in order**
+**5. Verify UID alignment**
+
+The NFS playbook exports `/home` from arbiter and clients mount it without remapping. NFS compares numeric UIDs and GIDs, not usernames. The build sudoer (`wpaik`) must have the same UID and GID on every node before NFS is mounted, or files on the share will appear under the wrong owner and writes will fail.
+
+Check on every node:
+
+```bash
+ansible all_nodes -a "id wpaik"
+```
+
+All entries should report the same `uid=` and `gid=`. If any node reports a different value, align it before continuing. See [UID mismatch](#uid-mismatch-on-a-newly-added-node) in Troubleshooting.
+
+**6. Run playbooks in order**
 
 ```bash
 ansible-playbook playbooks/nvme_setup_management.yaml
@@ -130,3 +142,39 @@ Stale `resume=UUID` in GRUB can cause boot hangs. From the GRUB menu, press `e`,
 ```bash
 grubby --update-kernel=ALL --remove-args="resume=UUID=<UUID>"
 ```
+
+**UID mismatch on a newly added node**
+
+The setup assumes `wpaik` has the same UID and GID on every node. Rocky's installer assigns UID 1000 to the first user created during installation, which is usually consistent across a clean six-node build. A node provisioned later (different install order, kickstart change, or manual `useradd`) can end up with a different UID, in which case NFS shows wrong ownership on `/home` and writes fail.
+
+Check the UID on arbiter and on the affected node:
+
+```bash
+id wpaik
+```
+
+If they differ, align the new node to arbiter's value. Below assumes arbiter is `1000` and the new node is `1001`. Substitute the actual values from `id wpaik`.
+
+Log in as a different sudoer (or root) so `wpaik` has no active session:
+
+```bash
+who | grep wpaik          # should be empty
+sudo pkill -KILL -u wpaik # kill any leftover processes
+
+sudo umount /home         # unmount NFS first if already mounted
+                          # use 'umount -l /home' if it is busy
+
+sudo groupmod -g 1000 wpaik
+sudo usermod  -u 1000 -g 1000 wpaik
+
+# Update ownership of files under the old UID. -xdev stops find at
+# filesystem boundaries so NFS mounts and other partitions are untouched.
+sudo find / -xdev -uid 1001 -exec chown -h 1000 {} +
+sudo find / -xdev -gid 1001 -exec chgrp -h 1000 {} +
+
+id wpaik                  # verify
+sudo mount -a             # remount NFS
+ls -la /home              # ownership should now resolve to wpaik
+```
+
+If `wpaik` is a member of additional groups, verify with `groups wpaik` and re-add it to those groups after `groupmod`.

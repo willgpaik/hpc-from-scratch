@@ -82,6 +82,30 @@
       debug:
         var: nfs_exports.stdout_lines
 
+- name: Verify local UID matches arbiter
+  hosts: head,workers,gpu,visualization
+  become: true
+  tasks:
+    - name: Get local wpaik uid
+      command: id -u wpaik
+      register: local_uid
+      changed_when: false
+
+    - name: Get arbiter wpaik uid
+      command: id -u wpaik
+      delegate_to: arbiter.cluster.local
+      register: arbiter_uid
+      changed_when: false
+      run_once: true
+
+    - name: Fail if UIDs differ
+      fail:
+        msg: >
+          UID mismatch on {{ inventory_hostname }}:
+          local wpaik={{ local_uid.stdout }}, arbiter wpaik={{ arbiter_uid.stdout }}.
+          Align UID/GID before mounting NFS. See README troubleshooting.
+      when: local_uid.stdout != arbiter_uid.stdout
+
 # ============================================
 # Phase 2: NFS clients on all other nodes
 # ============================================

@@ -3,6 +3,10 @@
 # Distributes Slurm RPMs built by 02_slurm_build.yaml and installs them
 # on each node according to its role.
 #
+# After running this playbook, add to /etc/dnf/dnf.conf on all nodes:
+#   exclude=slurm*
+# This prevents dnf upgrade from overwriting the pinned version.
+#
 # Prerequisites: 02_slurm_build.yaml completed
 #
 # Usage: ansible-playbook playbooks/03_slurm_install.yaml -K
@@ -49,6 +53,7 @@
           - "/tmp/slurm_rpms/slurm-slurmd-{{ slurm_version }}-1.el10.x86_64.rpm"
         state: present
         disable_gpg_check: true
+        disable_excludes: all
 
 - name: Install controller packages on arbiter
   hosts: management
@@ -198,6 +203,25 @@
         name: swap.target
         state: stopped
         enabled: false
+
+- name: Pin Slurm version in dnf on all nodes
+  hosts: all_nodes
+  become: true
+  tasks:
+    - name: Exclude slurm from dnf upgrades
+      lineinfile:
+        path: /etc/dnf/dnf.conf
+        line: "exclude=slurm*"
+        state: present
+
+    - name: Verify exclusion
+      command: grep slurm /etc/dnf/dnf.conf
+      register: dnf_check
+      changed_when: false
+
+    - name: Show dnf exclusion
+      debug:
+        var: dnf_check.stdout
 
 - name: Summary
   hosts: localhost

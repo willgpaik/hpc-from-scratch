@@ -4,11 +4,23 @@
 #          Builds Slurm RPMs from source on arbiter and creates the slurm
 #          user with a fixed UID on all nodes.
 #
-# After running this playbook, add to /etc/dnf/dnf.conf on all nodes:
-#   exclude=slurm*
-# This prevents dnf upgrade from overwriting the pinned version.
-#
 # Usage: ansible-playbook playbooks/02_slurm_build.yaml -K
+# 
+# IMPORTANT: Slurm version pinning
+#
+# After installation completes, dnf.conf gets `exclude=slurm*` to prevent
+# accidental upgrades from EPEL (which ships its own slurm packages that
+# would overwrite this custom SchedMD build with PMIx and cgroup v2 support).
+#
+# To upgrade Slurm in the future:
+#   1. Remove `exclude=slurm*` from /etc/dnf/dnf.conf on all nodes:
+#      ansible all_nodes -b -m lineinfile -a "path=/etc/dnf/dnf.conf line='exclude=slurm*' state=absent"
+#   2. Rebuild RPMs with new version (re-run 02_slurm_build.yaml with updated slurm_version)
+#   3. Install new RPMs (re-run 03_slurm_install.yaml)
+#   4. Re-add exclude (the install playbook restores it automatically)
+#
+# To check current pin status:
+#   ansible all_nodes -m shell -a "grep slurm /etc/dnf/dnf.conf"
 
 - name: Create slurm user with fixed UID on all nodes
   hosts: all_nodes
@@ -131,26 +143,6 @@
         dest: /tmp/slurm_rpms_local/
         flat: true
       loop: "{{ rpm_files.files }}"
-
-- name: Pin Slurm version in dnf on all nodes
-  hosts: all_nodes
-  become: true
-
-  tasks:
-    - name: Exclude slurm from dnf upgrades
-      lineinfile:
-        path: /etc/dnf/dnf.conf
-        line: "exclude=slurm*"
-        state: present
-
-    - name: Verify exclusion
-      shell: grep slurm /etc/dnf/dnf.conf
-      register: dnf_check
-      changed_when: false
-
-    - name: Show dnf exclusion
-      debug:
-        var: dnf_check.stdout
 
 - name: Summary
   hosts: localhost

@@ -1,0 +1,22 @@
+# 99_slurm_unpin.yaml
+# Temporarily remove the slurm exclusion to allow upgrade
+# Run before re-running 02 and 03 playbooks for a version upgrade
+
+- name: Remove Slurm version pin
+  hosts: all_nodes
+  become: true
+  tasks:
+    - name: Remove exclude=slurm* from dnf.conf
+      lineinfile:
+        path: /etc/dnf/dnf.conf
+        line: "exclude=slurm*"
+        state: absent
+
+    - name: Verify removal
+      shell: grep slurm /etc/dnf/dnf.conf || echo "No exclusion found (good)"
+      register: check
+      changed_when: false
+
+    - name: Show result
+      debug:
+        var: check.stdout

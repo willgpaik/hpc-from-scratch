@@ -29,7 +29,22 @@ sudo chown wpaik:wpaik /opt/ansible
 
 Copy this directory to `/opt/ansible`.
 
-**2. SSH key**
+**2. Verify ansible.cfg has a local remote_tmp**
+
+Because `/home` is NFS-mounted after the NFS playbook runs, Ansible's default `remote_tmp` (`~/.ansible/tmp/`) ends up on NFS. Files copied through it inherit the `nfs_t` SELinux context, which dnf rejects with a confusing "No match for argument" error during package installs in later episodes. The provided `ansible.cfg` sets `remote_tmp` to a local path to avoid this:
+
+```ini
+[defaults]
+remote_tmp = /var/tmp/.ansible-${USER}/tmp
+```
+
+Confirm the line is present before continuing:
+
+```bash
+grep remote_tmp /opt/ansible/ansible.cfg
+```
+
+**3. SSH key**
 
 Generate on arbiter and distribute to all nodes:
 
@@ -42,7 +57,7 @@ ssh-copy-id -i /opt/ansible/.ssh/worker_ed25519.pub wpaik@192.168.50.11   # cors
 ssh-copy-id -i /opt/ansible/.ssh/worker_ed25519.pub wpaik@192.168.50.19   # observer
 ```
 
-**3. Vault**
+**4. Vault**
 
 ```bash
 cp vault.yaml.example vault.yaml
@@ -52,14 +67,14 @@ echo "your_vault_password" > /opt/ansible/.ansible_vault_pw
 chmod 600 /opt/ansible/.ansible_vault_pw
 ```
 
-**4. Verify connectivity**
+**5. Verify connectivity**
 
 ```bash
 cd /opt/ansible
 ansible all -m ping
 ```
 
-**5. Verify UID alignment**
+**6. Verify UID alignment**
 
 The NFS playbook exports `/home` from arbiter and clients mount it without remapping. NFS compares numeric UIDs and GIDs, not usernames. The build sudoer (`wpaik`) must have the same UID and GID on every node before NFS is mounted, or files on the share will appear under the wrong owner and writes will fail.
 
@@ -71,7 +86,7 @@ ansible all_nodes -a "id wpaik"
 
 All entries should report the same `uid=` and `gid=`. If any node reports a different value, align it before continuing. See [UID mismatch](#uid-mismatch-on-a-newly-added-node) in Troubleshooting.
 
-**6. Run playbooks in order**
+**7. Run playbooks in order**
 
 ```bash
 ansible-playbook playbooks/nvme_setup_management.yaml

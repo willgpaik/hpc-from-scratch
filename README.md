@@ -12,7 +12,7 @@ Each episode has its own directory with templates and a short troubleshooting gu
 | 2 | RAM, NVMe, and the iGPU Memory Trap | [post](https://theloginnode.com/posts/2026/03/hpc_from_scratch_02/) | — |
 | 3 | The WiFi Login Node | [post](https://theloginnode.com/posts/2026/04/hpc_from_scratch_03/) | [ep03-network-os/](ep03-network-os/) |
 | 4 | NFS, FreeIPA, and Ansible | [post](https://theloginnode.com/posts/2026/05/hpc_from_scratch_04/) | [ep04-storage-auth/](ep04-storage-auth/) |
-| 5 | Slurm Configuration | (In Progress) | [ep05-slurm/](ep05-slurm/) |
+| 5 | Slurm Configuration | [post](https://theloginnode.com/posts/2026/05/hpc_from_scratch_05/) | [ep05-slurm/](ep05-slurm/) |
 
 ## The Cluster
 

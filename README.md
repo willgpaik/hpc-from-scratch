@@ -8,11 +8,12 @@ Each episode has its own directory with templates and a short troubleshooting gu
 
 | Episode | Topic | Blog | Directory |
 |--------|-------|------|-----------|
-| 1 | Building Real HPC on a Budget | [post](https://theloginnode.com/posts/2026/03/hpc_from_scratch_01/) | — |
-| 2 | RAM, NVMe, and the iGPU Memory Trap | [post](https://theloginnode.com/posts/2026/03/hpc_from_scratch_02/) | — |
-| 3 | The WiFi Login Node | [post](https://theloginnode.com/posts/2026/04/hpc_from_scratch_03/) | [ep03-network-os/](ep03-network-os/) |
-| 4 | NFS, FreeIPA, and Ansible | [post](https://theloginnode.com/posts/2026/05/hpc_from_scratch_04/) | [ep04-storage-auth/](ep04-storage-auth/) |
-| 5 | Slurm Configuration | [post](https://theloginnode.com/posts/2026/05/hpc_from_scratch_05/) | [ep05-slurm/](ep05-slurm/) |
+| 1 | Building Real HPC on a Budget | [post](https://theloginnode.com/posts/hpc-from-scratch-01/) | — |
+| 2 | RAM, NVMe, and the iGPU Memory Trap | [post](https://theloginnode.com/posts/hpc-from-scratch-02/) | — |
+| 3 | The WiFi Login Node | [post](https://theloginnode.com/posts/hpc-from-scratch-03/) | [ep03-network-os/](ep03-network-os/) |
+| 4 | NFS, FreeIPA, and Ansible | [post](https://theloginnode.com/posts/hpc-from-scratch-04/) | [ep04-storage-auth/](ep04-storage-auth/) |
+| 5 | Slurm Configuration | [post](https://theloginnode.com/posts/hpc-from-scratch-05/) | [ep05-slurm/](ep05-slurm/) |
+| 6 | Slurm Accounting, QOS, and Fair Share | [post](https://theloginnode.com/posts/hpc-from-scratch-06/) | [ep06-slurm-accounting/](ep06-slurm-accounting/) |
 
 ## The Cluster
 

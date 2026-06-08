@@ -1,0 +1,14 @@
+# Priority / Fair Share
+# Append these lines to /etc/slurm/slurm.conf
+# Episode 6 - HPC From Scratch | https://theloginnode.com
+#
+# After appending, distribute slurm.conf to all nodes and restart slurmctld:
+#   ansible all_nodes -b -m copy \
+#     -a "src=/etc/slurm/slurm.conf dest=/etc/slurm/slurm.conf owner=slurm group=slurm mode=0644"
+#   sudo systemctl restart slurmctld
+
+PriorityType=priority/multifactor
+PriorityWeightFairShare=100000
+PriorityWeightAge=1000
+PriorityDecayHalfLife=5-0
+PriorityMaxAge=7-0

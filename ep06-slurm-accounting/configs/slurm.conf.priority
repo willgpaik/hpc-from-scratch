@@ -12,3 +12,4 @@ PriorityWeightFairShare=100000
 PriorityWeightAge=1000
 PriorityDecayHalfLife=5-0
 PriorityMaxAge=7-0
+AccountingStorageEnforce=associations,qos

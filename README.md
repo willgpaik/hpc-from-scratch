@@ -14,6 +14,7 @@ Each episode has its own directory with templates and a short troubleshooting gu
 | 4 | NFS, FreeIPA, and Ansible | [post](https://theloginnode.com/posts/hpc-from-scratch-04/) | [ep04-storage-auth/](ep04-storage-auth/) |
 | 5 | Slurm Configuration | [post](https://theloginnode.com/posts/hpc-from-scratch-05/) | [ep05-slurm/](ep05-slurm/) |
 | 6 | Slurm Accounting, QOS, and Fair Share | [post](https://theloginnode.com/posts/hpc-from-scratch-06/) | [ep06-slurm-accounting/](ep06-slurm-accounting/) |
+| 7 | Lmod and Apptainer | [post](https://theloginnode.com/posts/hpc-from-scratch-07/) | [ep07-lmod-apptainer/](ep07-lmod-apptainer/)
 
 ## The Cluster
 

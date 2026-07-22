@@ -1,0 +1,83 @@
+---
+# 01_install_lmod.yaml
+# Installs Lmod via dnf (current Rocky Linux 10 package: 8.7.65), adds
+# /shared/sw/modulefiles to MODULEPATH via a small profile.d script,
+# and pins the package against accidental upgrades.
+#
+# Why dnf instead of source build: the upstream Lmod release is 9.2.6,
+# a major version ahead of the 8.7.65 that Rocky 10 ships. But nothing
+# in this series needs a 9.x-only feature, and EPEL/distro lag is not
+# in itself a reason to build from source. Unlike Slurm in EP5, where
+# the distro package was missing PMIx and cgroup v2 support we actually
+# needed. Here there is no such gap, so dnf is simpler and matches what
+# real clusters do in practice.
+#
+# Pinning approach: this reads whatever is already on the excludepkgs
+# line in /etc/dnf/dnf.conf, adds "Lmod" to that list if it is not
+# already there, and writes the combined list back. This means it does
+# not matter whether this playbook runs before or after
+# 03_install_apptainer.yaml. Each playbook only needs to know its own
+# package name, not the full pinned list. Future episodes that pin
+# another package can reuse the same two-task pattern.
+
+- name: Install Lmod and configure custom MODULEPATH
+  hosts: all_nodes
+  become: yes
+
+  tasks:
+    - name: Install Lmod
+      dnf:
+        name: Lmod
+        state: present
+
+    - name: Verify Lmod installation
+      command: rpm -q Lmod
+      register: lmod_verify
+      changed_when: false
+
+    - name: Show installed Lmod version
+      debug:
+        msg: "{{ inventory_hostname }}: {{ lmod_verify.stdout }}"
+
+    - name: Deploy custom MODULEPATH profile.d script
+      copy:
+        dest: /etc/profile.d/z00-shared-modulepath.sh
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Adds the shared software stack to MODULEPATH.
+          # Must run AFTER Lmod's own RPM-provided profile.d scripts
+          # (00-modulepath.sh, modules.sh), which is why this filename
+          # sorts later alphabetically. The `module` command has to
+          # already exist before `module use` will work.
+          # only when Lmod is loaded
+          if [ -n "$LMOD_CMD" ]; then
+              module use /shared/sw/modulefiles
+          fi
+
+    - name: Read current excludepkgs value (empty if not set)
+      command: grep -oP '^excludepkgs=\K.*' /etc/dnf/dnf.conf
+      register: excludepkgs_current
+      changed_when: false
+      failed_when: false
+
+    - name: Ensure Lmod is in the excludepkgs list, without dropping any existing entries
+      lineinfile:
+        path: /etc/dnf/dnf.conf
+        regexp: '^excludepkgs='
+        line: >-
+          excludepkgs={{
+            (excludepkgs_current.stdout.split(',') | reject('equalto', '') | list + ['Lmod'])
+            | unique | join(',')
+          }}
+        insertafter: '^\[main\]'
+
+    - name: Show current pin status
+      command: grep excludepkgs /etc/dnf/dnf.conf
+      register: pin_verify
+      changed_when: false
+
+    - name: Display pin status
+      debug:
+        msg: "{{ inventory_hostname }}: {{ pin_verify.stdout }}"

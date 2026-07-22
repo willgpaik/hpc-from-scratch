@@ -1,0 +1,63 @@
+---
+# 03_install_apptainer.yaml
+# Installs Apptainer via dnf. The plain `apptainer` package
+# installs without setuid by default. Confirmed
+# directly on this cluster: `rpm -qa | grep apptainer` shows
+# apptainer-1.5.0-1.el10_2.x86_64 with no setuid binary present.
+#
+# Current Rocky Linux 10 package version is 1.5.0, a few patch releases
+# behind upstream's 1.5.3. That gap is not worth a source build, and
+# Apptainer binaries land at /usr/bin/apptainer, already on PATH for
+# every user. No Lmod modulefile or path management needed.
+#
+# Pinning uses the same read-then-append pattern as
+# 01_install_lmod.yaml: read whatever is already on the excludepkgs
+# line, add "apptainer" if it is not already there, write the combined
+# list back. This is what makes it safe to run this playbook before or
+# after 01_install_lmod.yaml in either order. Neither playbook needs
+# to know about the other's pinned package.
+
+- name: Install Apptainer
+  hosts: all_nodes
+  become: yes
+
+  tasks:
+    - name: Install Apptainer (non-setuid by default)
+      dnf:
+        name: apptainer
+        state: present
+
+    - name: Verify Apptainer installation
+      command: apptainer --version
+      register: apptainer_verify
+      changed_when: false
+
+    - name: Show installed Apptainer version
+      debug:
+        msg: "{{ inventory_hostname }}: {{ apptainer_verify.stdout }}"
+
+    - name: Read current excludepkgs value (empty if not set)
+      command: grep -oP '^excludepkgs=\K.*' /etc/dnf/dnf.conf
+      register: excludepkgs_current
+      changed_when: false
+      failed_when: false
+
+    - name: Ensure apptainer is in the excludepkgs list, without dropping any existing entries
+      lineinfile:
+        path: /etc/dnf/dnf.conf
+        regexp: '^excludepkgs='
+        line: >-
+          excludepkgs={{
+            (excludepkgs_current.stdout.split(',') | reject('equalto', '') | list + ['apptainer'])
+            | unique | join(',')
+          }}
+        insertafter: '^\[main\]'
+
+    - name: Show current pin status
+      command: grep excludepkgs /etc/dnf/dnf.conf
+      register: pin_verify
+      changed_when: false
+
+    - name: Display pin status
+      debug:
+        msg: "{{ inventory_hostname }}: {{ pin_verify.stdout }}"

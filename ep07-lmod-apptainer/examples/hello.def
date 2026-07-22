@@ -1,0 +1,15 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%files
+    hello.py /opt/hello.py
+
+%post
+    apt-get update && apt-get install -y python3
+
+%runscript
+    python3 /opt/hello.py "$@"
+
+%labels
+    Author Will Paik
+    Version 1.0

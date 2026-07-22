@@ -1,0 +1,30 @@
+---
+# 02_setup_modulefiles.yaml
+# Renames /shared/sw/modules to /shared/sw/modulefiles on arbiter (the
+# NFS server). Safe to re-run: skips the rename if the old directory
+# no longer exists.
+
+- name: Set up modulefiles directory on NFS
+  hosts: management
+  become: yes
+
+  vars:
+    sw_base: "/nfsdata/shared/sw"
+
+  tasks:
+    - name: Check if legacy modules directory exists
+      stat:
+        path: "{{ sw_base }}/modules"
+      register: modules_dir
+
+    - name: Rename modules to modulefiles
+      command: mv {{ sw_base }}/modules {{ sw_base }}/modulefiles
+      when: modules_dir.stat.exists
+
+    - name: Ensure modulefiles directory exists
+      file:
+        path: "{{ sw_base }}/modulefiles"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
